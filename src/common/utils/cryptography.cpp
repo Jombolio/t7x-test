@@ -31,6 +31,7 @@ namespace utils::cryptography
 				register_hash(&sha1_desc);
 				register_hash(&sha256_desc);
 				register_hash(&sha512_desc);
+				register_hash(&md5_desc);
 			}
 		} ___;
 
@@ -590,6 +591,26 @@ namespace utils::cryptography
 		sha512_init(&state);
 		sha512_process(&state, data, ul(length));
 		sha512_done(&state, buffer);
+
+		std::string hash(cs(buffer), sizeof(buffer));
+		if (!hex) return hash;
+
+		return string::dump_hex(hash, "");
+	}
+
+	std::string md5::compute(const std::string& data, const bool hex)
+	{
+		return compute(cs(data.data()), data.size(), hex);
+	}
+
+	std::string md5::compute(const uint8_t* data, const size_t length, const bool hex)
+	{
+		uint8_t buffer[16] = {0};
+
+		hash_state state;
+		md5_init(&state);
+		md5_process(&state, data, ul(length));
+		md5_done(&state, buffer);
 
 		std::string hash(cs(buffer), sizeof(buffer));
 		if (!hex) return hash;

@@ -10,10 +10,10 @@
 #include <utils/io.hpp>
 #include <utils/compression.hpp>
 
-#define UPDATE_SERVER "https://bo3.ezz.lol/"
+#define UPDATE_SERVER "https://jombo.uk/t7x/"
 
-#define UPDATE_FILE_MAIN UPDATE_SERVER "boiii.json"
-#define UPDATE_FOLDER_MAIN UPDATE_SERVER "boiii/"
+#define UPDATE_FILE_MAIN UPDATE_SERVER "files.json"
+#define UPDATE_FOLDER_MAIN UPDATE_SERVER
 
 #define UPDATE_HOST_BINARY "boiii.exe"
 
@@ -31,38 +31,6 @@ namespace updater
 			return UPDATE_FOLDER_MAIN;
 		}
 
-		std::vector<file_info> parse_file_infos(const std::string& json)
-		{
-			rapidjson::Document doc{};
-			doc.Parse(json.data(), json.size());
-
-			if (!doc.IsArray())
-			{
-				return {};
-			}
-
-			std::vector<file_info> files{};
-
-			for (const auto& element : doc.GetArray())
-			{
-				if (!element.IsArray())
-				{
-					continue;
-				}
-
-				auto array = element.GetArray();
-
-				file_info info{};
-				info.name.assign(array[0].GetString(), array[0].GetStringLength());
-				info.size = array[1].GetInt64();
-				info.hash.assign(array[2].GetString(), array[2].GetStringLength());
-
-				files.emplace_back(std::move(info));
-			}
-
-			return files;
-		}
-
 		std::string get_cache_buster()
 		{
 			return "?" + std::to_string(
@@ -72,18 +40,33 @@ namespace updater
 
 		std::vector<file_info> get_file_infos()
 		{
-			const auto json = utils::http::get_data(get_update_file() + get_cache_buster());
-			if (!json)
+			const auto data = utils::http::get_data(get_update_file() + get_cache_buster());
+			if (!data)
 			{
 				return {};
 			}
 
-			return parse_file_infos(*json);
+			std::string hash = *data;
+			// Trim whitespace
+			hash.erase(hash.find_last_not_of(" \n\r\t") + 1);
+			hash.erase(0, hash.find_first_not_of(" \n\r\t"));
+
+			if (hash.empty())
+			{
+				return {};
+			}
+
+			file_info info{};
+			info.name = UPDATE_HOST_BINARY;
+			info.size = 0; // Size check skipped for simplified update
+			info.hash = hash;
+
+			return { info };
 		}
 
 		std::string get_hash(const std::string& data)
 		{
-			return utils::cryptography::sha1::compute(data, true);
+			return utils::cryptography::md5::compute(data, true);
 		}
 
 		const file_info* find_host_file_info(const std::vector<file_info>& outdated_files)
@@ -145,10 +128,30 @@ namespace updater
 	void file_updater::run() const
 	{
 		this->create_config_file_if_not_exists();
-		const auto files = get_file_infos();
-		if (!files.empty())
+
+		// Ensure main.html exists
+		const auto main_html_path = this->base_ / "data/launcher/main.html";
+		if (!utils::io::file_exists(main_html_path))
 		{
-			this->cleanup_directories(files);
+			file_info main_html_info{};
+			main_html_info.name = "data/launcher/main.html";
+			main_html_info.size = 0;
+			main_html_info.hash = ""; // Skip hash check
+
+			try
+			{
+				this->update_file(main_html_info);
+			}
+			catch (...)
+			{
+				// Ignore failure to download main.html, main.cpp will handle the error if it's missing
+			}
+		}
+
+		const auto files = get_file_infos();
+		if (files.empty())
+		{
+			return;
 		}
 
 		const auto outdated_files = this->get_outdated_files(files);
@@ -158,23 +161,38 @@ namespace updater
 		}
 
 		this->update_host_binary(outdated_files);
-		this->update_files(outdated_files);
-
-		std::this_thread::sleep_for(1s);
 	}
 
 	void file_updater::update_file(const file_info& file) const
 	{
-		const auto url = get_update_folder() + file.name + "?" + file.hash;
+		// For main.html, we don't have a hash query param
+		std::string url = get_update_folder() + file.name;
+		if (!file.hash.empty())
+		{
+			url += "?" + file.hash;
+		}
 
 		const auto data = utils::http::get_data(url, {}, [&](const size_t progress)
 			{
 				this->listener_.file_progress(file, progress);
 			});
 
-		if (!data || (data->size() != file.size || get_hash(*data) != file.hash))
+		if (!data)
 		{
 			throw std::runtime_error("Failed to download: " + url);
+		}
+
+		if (!file.hash.empty())
+		{
+			if (file.size != 0 && data->size() != file.size)
+			{
+				throw std::runtime_error("Size mismatch: " + url);
+			}
+
+			if (get_hash(*data) != file.hash)
+			{
+				throw std::runtime_error("Hash mismatch: " + url);
+			}
 		}
 
 		const auto out_file = this->get_drive_filename(file);
@@ -307,7 +325,7 @@ namespace updater
 			return true;
 		}
 
-		if (data.size() != file.size)
+		if (file.size != 0 && data.size() != file.size)
 		{
 			return true;
 		}
@@ -353,90 +371,14 @@ namespace updater
 
 	void file_updater::cleanup_directories(const std::vector<file_info>& files) const
 	{
-		if (!utils::io::directory_exists(this->base_))
-		{
-			return;
-		}
-
-		this->cleanup_root_directory(files);
-		this->cleanup_data_directory(files);
+		// Cleanup disabled for simplified update
 	}
 
 	void file_updater::cleanup_root_directory(const std::vector<file_info>& files) const
 	{
-		const auto existing_files = utils::io::list_files(this->base_);
-		for (const auto& file : existing_files)
-		{
-			const auto entry = std::filesystem::relative(file, this->base_);
-			if ((entry.string() == "user" || entry.string() == "data") && utils::io::directory_exists(file))
-			{
-				continue;
-			}
-
-			bool found = false;
-			for (const auto& wantedFile : files)
-			{
-				if (wantedFile.name == entry)
-				{
-					found = true;
-					break;
-				}
-			}
-
-			if (!found)
-			{
-				std::error_code code{};
-				std::filesystem::remove_all(file, code);
-			}
-		}
 	}
 
 	void file_updater::cleanup_data_directory(const std::vector<file_info>& files) const
 	{
-		const auto base = std::filesystem::path(this->base_);
-		if (!utils::io::directory_exists(base.string()))
-		{
-			return;
-		}
-
-		std::vector<std::filesystem::path> legal_files{};
-		legal_files.reserve(files.size());
-		for (const auto& file : files)
-		{
-			if (file.name.starts_with("data"))
-			{
-				legal_files.emplace_back(std::filesystem::absolute(base / file.name));
-			}
-		}
-
-		const auto existing_files = utils::io::list_files(base / "data", true);
-		for (auto& file : existing_files)
-		{
-			const auto is_file = std::filesystem::is_regular_file(file);
-			const auto is_folder = std::filesystem::is_directory(file);
-
-			if (is_file || is_folder)
-			{
-				bool is_legal = false;
-
-				for (const auto& legal_file : legal_files)
-				{
-					if ((is_folder && is_inside_folder(legal_file, file)) ||
-						(is_file && legal_file == file))
-					{
-						is_legal = true;
-						break;
-					}
-				}
-
-				if (is_legal)
-				{
-					continue;
-				}
-			}
-
-			std::error_code code{};
-			std::filesystem::remove_all(file, code);
-		}
 	}
 }

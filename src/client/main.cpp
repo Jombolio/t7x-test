@@ -281,7 +281,7 @@ int main()
 
 			if (!utils::io::file_exists(launcher::get_launcher_ui_file().generic_wstring()))
 			{
-				throw std::runtime_error("BOIII needs an active internet connection for the first time you launch it.");
+				throw std::runtime_error("T7X needs an active internet connection for the first time you launch it.");
 			}
 
 			const auto client_binary = "BlackOps3.exe"s;
